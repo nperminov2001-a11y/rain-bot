@@ -9,8 +9,11 @@ import os
 import random
 from datetime import datetime, timedelta
 
-BOT_TOKEN = "8715940830:AAGUiG4h1_lyXsV30GFahjIqrxgOVN73mnA"
-WEATHER_KEY = "02c6e80f0555fed3b5af48438ceedaa2"
+from dotenv import load_dotenv
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEATHER_KEY = os.getenv("WEATHER_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
