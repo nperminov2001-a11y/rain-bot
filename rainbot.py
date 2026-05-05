@@ -7,7 +7,7 @@ import json
 import threading
 import os
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -58,24 +58,30 @@ def ask_city(msg):
 
 def save_city(msg):
     city = msg.text.strip()
-    
-    # Проверяем существует ли город
+
     url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_KEY}"
     response = requests.get(url).json()
-    
+
     if response.get("cod") == "404":
-        bot.send_message(msg.chat.id, f"Город «{city}» не найден. Попробуйте ещё раз — напишите название на английском или проверьте написание.")
-        bot.register_next_step_handler(msg, save_city)  # даём попробовать снова
+        bot.send_message(msg.chat.id, f"Город «{city}» не найден. Попробуйте ещё раз — напишите название на английском.")
+        bot.register_next_step_handler(msg, save_city)
         return
-    
+
     users = load_users()
     chat_id = str(msg.chat.id)
-    users[chat_id] = {"type": "city", "city": city}
+
+    # Проверяем идёт ли дождь прямо сейчас
+    current_weather = response.get("weather", [{}])[0].get("main", "")
+    raining_now = current_weather in ("Rain", "Drizzle", "Thunderstorm")
+
+    users[chat_id] = {"type": "city", "city": city, "raining": raining_now}
     save_users(users)
-    bot.send_message(
-        msg.chat.id,
-        f"✅ Бот запущен! Буду следить за погодой в городе {city} и пришлю уведомление если будет дождь.\n\nЧтобы сменить локацию — напишите /location"
-    )
+
+    if raining_now:
+        bot.send_message(msg.chat.id, f"✅ Бот запущен! Буду присылать уведомления о дожде в городе {city}. Кстати, дождь как раз сейчас идёт — надеюсь, вы в тепле! 🌧")
+    else:
+        bot.send_message(msg.chat.id, f"✅ Бот запущен! Буду следить за погодой в городе {city} и пришлю уведомление если будет дождь.\n\nЧтобы сменить локацию — напишите /location")
+
 # --- Пользователь выбрал точку на карте ---
 
 @bot.message_handler(func=lambda msg: msg.text == "📍 Точка на карте")
@@ -98,15 +104,24 @@ def ask_location(msg):
 def save_location(msg):
     lat = msg.location.latitude
     lon = msg.location.longitude
+
     users = load_users()
     chat_id = str(msg.chat.id)
-    users[chat_id] = {"type": "coords", "lat": lat, "lon": lon}
+
+    # Проверяем идёт ли дождь прямо сейчас
+    url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_KEY}"
+    response = requests.get(url).json()
+    current_weather = response.get("weather", [{}])[0].get("main", "")
+    raining_now = current_weather in ("Rain", "Drizzle", "Thunderstorm")
+
+    users[chat_id] = {"type": "coords", "lat": lat, "lon": lon, "raining": raining_now}
     save_users(users)
-    bot.send_message(
-        msg.chat.id,
-        "✅ Отлично! Буду следить за погодой в этом месте и пришлю уведомление если будет дождь.\n\nЧтобы сменить локацию — напишите /location",
-        reply_markup=ReplyKeyboardRemove()
-    )
+
+    if raining_now:
+        bot.send_message(msg.chat.id, "✅ Бот запущен! Буду присылать уведомления о дожде в этом месте. Кстати, дождь как раз сейчас идёт — надеюсь, вы в тепле! 🌧", reply_markup=ReplyKeyboardRemove())
+    else:
+        bot.send_message(msg.chat.id, "✅ Бот запущен! Буду следить за погодой в этом месте и пришлю уведомление если будет дождь.\n\nЧтобы сменить локацию — напишите /location", reply_markup=ReplyKeyboardRemove())
+
 
 # --- /stop ---
 
@@ -163,12 +178,6 @@ def check_rain():
     changed = False
 
     for chat_id, data in users.items():
-        last_notified = data.get("last_notified")
-        if last_notified:
-            last_time = datetime.fromisoformat(last_notified)
-            if datetime.now() - last_time < timedelta(hours=3):
-                continue
-
         try:
             rain = False
 
@@ -181,10 +190,18 @@ def check_rain():
                 lon = data.get("lon")
                 rain = check_rain_by_coords(lat, lon)
 
-            if rain:
+            was_raining = data.get("raining", False)
+
+            if rain and not was_raining:
+                # Дождь начался — отправляем уведомление
                 message = random.choice(RAIN_MESSAGES)
                 bot.send_message(int(chat_id), message)
-                users[chat_id]["last_notified"] = datetime.now().isoformat()
+                users[chat_id]["raining"] = True
+                changed = True
+
+            elif not rain and was_raining:
+                # Дождь закончился — просто запоминаем
+                users[chat_id]["raining"] = False
                 changed = True
 
         except Exception as e:
