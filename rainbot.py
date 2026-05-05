@@ -61,10 +61,23 @@ def set_city(msg):
 
 # --- Проверка погоды ---
 
+from datetime import datetime, timedelta
+
 def check_rain():
     users = load_users()
+    changed = False
+    
     for chat_id, data in users.items():
         city = data.get("city", "Moscow")
+        
+        # Проверяем — не слали ли уведомление недавно?
+        last_notified = data.get("last_notified")
+        if last_notified:
+            last_time = datetime.fromisoformat(last_notified)
+            # Если с последнего уведомления прошло меньше 3 часов — пропускаем
+            if datetime.now() - last_time < timedelta(hours=3):
+                continue
+        
         url = f"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_KEY}&cnt=4&units=metric&lang=ru"
         try:
             response = requests.get(url).json()
@@ -72,9 +85,15 @@ def check_rain():
                 weather = period["weather"][0]["main"]
                 if weather in ("Rain", "Drizzle", "Thunderstorm"):
                     bot.send_message(int(chat_id), f"☔ В городе {city} скоро дождь! Возьмите зонтик 🌂")
+                    # Запоминаем время отправки
+                    users[chat_id]["last_notified"] = datetime.now().isoformat()
+                    changed = True
                     break
         except Exception as e:
             print(f"Ошибка для {chat_id}: {e}")
+    
+    if changed:
+        save_users(users)
 
 schedule.every(30).minutes.do(check_rain)
 
