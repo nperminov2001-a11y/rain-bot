@@ -64,7 +64,7 @@ def save_city(msg):
     response = requests.get(url).json()
     
     if response.get("cod") == "404":
-        bot.send_message(msg.chat.id, f"❌ Город «{city}» не найден. Попробуйте ещё раз — напишите название на английском или проверьте написание.")
+        bot.send_message(msg.chat.id, f"Город «{city}» не найден. Попробуйте ещё раз — напишите название на английском или проверьте написание.")
         bot.register_next_step_handler(msg, save_city)  # даём попробовать снова
         return
     
@@ -117,7 +117,7 @@ def stop(msg):
     if chat_id in users:
         del users[chat_id]
         save_users(users)
-    bot.send_message(msg.chat.id, "❌ Бот выключен. Напишите /start чтобы запустить снова.)
+    bot.send_message(msg.chat.id, "Бот выключен. Напишите /start чтобы запустить снова.")
 
 # --- Проверка погоды ---
 
