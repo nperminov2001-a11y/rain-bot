@@ -291,23 +291,23 @@ def build_forecast_message(lat, lon, timezone):
 
 def send_daily_forecasts():
     users = load_users()
-    for chat_id, data in users.items():
-        lat = data.get("lat")
-        lon = data.get("lon")
-        hour = data.get("hour")
-        timezone = data.get("timezone", "UTC")
+      for chat_id, data in users.items():
+            lat = data.get("lat")
+            lon = data.get("lon")
+            hour = data.get("hour")
+            timezone = data.get("timezone", "UTC")
 
-        if not lat or not lon or hour is None:
-            continue
+            if not lat or not lon or hour is None:
+                continue
 
-       try:
-            tz = ZoneInfo(timezone)
-            now = datetime.now(tz)
-            if now.hour == hour:
-                msg = build_forecast_message(lat, lon, timezone)
-                bot.send_message(int(chat_id), msg)
-        except Exception as e:
-            print(f"Ошибка для {chat_id}: {e}")
+            try:
+                tz = ZoneInfo(timezone)
+                now = datetime.now(tz)
+                if now.hour == hour:
+                    msg = build_forecast_message(lat, lon, timezone)
+                    bot.send_message(int(chat_id), msg)
+            except Exception as e:
+                print(f"Ошибка для {chat_id}: {e}")
 
 schedule.every().hour.do(send_daily_forecasts)
 
