@@ -8,8 +8,8 @@ import threading
 import os
 import random
 from datetime import datetime
-import pytz
-from dotenv import load_dotenv
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -300,8 +300,8 @@ def send_daily_forecasts():
         if not lat or not lon or hour is None:
             continue
 
-        try:
-            tz = pytz.timezone(timezone)
+       try:
+            tz = ZoneInfo(timezone)
             now = datetime.now(tz)
             if now.hour == hour:
                 msg = build_forecast_message(lat, lon, timezone)
