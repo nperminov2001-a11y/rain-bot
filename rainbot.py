@@ -8,8 +8,8 @@ import threading
 import os
 import random
 from datetime import datetime
-from datetime import datetime
 from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
 
 load_dotenv()
 
