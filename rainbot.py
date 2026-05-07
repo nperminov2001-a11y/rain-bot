@@ -7,12 +7,13 @@ import json
 import threading
 import os
 import random
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # --- База пользователей ---
@@ -27,11 +28,21 @@ def save_users(users):
     with open("users.json", "w") as f:
         json.dump(users, f)
 
-# --- Клавиатура геолокации ---
+# --- Клавиатуры ---
 
 def location_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markup.add(KeyboardButton("📍 Отправить моё текущее местоположение", request_location=True))
+    return markup
+
+def time_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    row = []
+    for hour in range(24):
+        row.append(KeyboardButton(f"{hour:02d}:00"))
+        if len(row) == 4:
+            markup.row(*row)
+            row = []
     return markup
 
 # --- /start ---
@@ -67,6 +78,35 @@ def change_location(msg):
         reply_markup=location_keyboard()
     )
 
+# --- /time ---
+
+@bot.message_handler(commands=["time"])
+def change_time(msg):
+    bot.send_message(
+        msg.chat.id,
+        "В какое время хотите получать сводку погоды?",
+        reply_markup=time_keyboard()
+    )
+    bot.register_next_step_handler(msg, save_time)
+
+def save_time(msg):
+    text = msg.text.strip()
+    if not text or not text.endswith(":00") or not text[:-3].isdigit():
+        bot.send_message(msg.chat.id, "Пожалуйста, выберите время из кнопок.")
+        bot.register_next_step_handler(msg, save_time)
+        return
+    hour = int(text[:-3])
+    users = load_users()
+    chat_id = str(msg.chat.id)
+    if chat_id in users:
+        users[chat_id]["hour"] = hour
+        save_users(users)
+        bot.send_message(
+            msg.chat.id,
+            f"✅ Время обновлено! Буду присылать сводку погоды каждый день в {text}.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
 # --- /stop ---
 
 @bot.message_handler(commands=["stop"])
@@ -78,161 +118,198 @@ def stop(msg):
         save_users(users)
     bot.send_message(msg.chat.id, "Бот выключен. Напишите /start чтобы запустить снова.")
 
-# --- Проверка погоды ---
+# --- /prikol ---
 
-RAIN_CODES = list(range(51, 68)) + list(range(80, 83)) + list(range(95, 100))
+@bot.message_handler(commands=["prikol"])
+def prikol(msg):
+    bot.send_message(
+        msg.chat.id,
+        "Местная газета послала репортёра на молочную ферму задать пару вопросов хозяину.\n\n"
+        "Журналист спрашивает у фермера:\n"
+        "— Сколько молока дают коровы?\n"
+        "— Какая именно, чёрная или коричневая?\n"
+        "— Чёрная.\n"
+        "— Несколько литров в день.\n"
+        "— А коричневая?\n"
+        "— Несколько литров в день.\n\n"
+        "Немного смутившись, репортёр продолжает:\n"
+        "— А чем вы их кормите?\n"
+        "— Какую, чёрную или коричневую?\n"
+        "— Коричневую.\n"
+        "— Она ест траву.\n"
+        "— А вторую?\n"
+        "— Она тоже ест траву.\n\n"
+        "Разозлившийся репортёр говорит:\n"
+        "— Если они обе дают одинаковое количество молока и обе едят одно и то же, почему вы всё время спрашиваете «какая»?\n"
+        "— Потому что чёрная корова — моя.\n"
+        "— А коричневая?\n"
+        "— Тоже моя. 🐄"
+    )
 
-def check_rain_now(lat, lon):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=precipitation,weathercode&timezone=auto"
-    response = requests.get(url).json()
-    current = response.get("current", {})
-    precipitation = current.get("precipitation", 0)
-    weathercode = current.get("weathercode", 0)
-    return precipitation > 0 or weathercode in RAIN_CODES
-
-def check_rain_soon(lat, lon):
-    # Прогноз на ближайшие 2 часа — смотрим следующие 2 слота по 30 минут
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&minutely_15=precipitation,weathercode&timezone=auto&forecast_minutely_15=8"
-    response = requests.get(url).json()
-    minutely = response.get("minutely_15", {})
-    precipitations = minutely.get("precipitation", [])
-    weathercodes = minutely.get("weathercode", [])
-    # Смотрим слоты с 4 по 8 — это примерно 30-60 минут вперёд
-    for i in range(4, min(8, len(precipitations))):
-        if precipitations[i] > 0 or weathercodes[i] in RAIN_CODES:
-            return True
-    return False
-
-# --- Сохранение локации ---
+# --- Получение геолокации ---
 
 @bot.message_handler(content_types=["location"])
 def save_location(msg):
     lat = msg.location.latitude
     lon = msg.location.longitude
 
-    raining_now = check_rain_now(lat, lon)
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=weathercode&timezone=auto"
+    response = requests.get(url).json()
+    timezone = response.get("timezone", "UTC")
 
     users = load_users()
     chat_id = str(msg.chat.id)
+    existing = users.get(chat_id, {})
+
     users[chat_id] = {
         "lat": lat,
         "lon": lon,
-        "raining": raining_now,
-        "warned": False
+        "timezone": timezone,
+        "hour": existing.get("hour")
     }
     save_users(users)
 
-    if raining_now:
+    if existing.get("hour") is not None:
         bot.send_message(
             msg.chat.id,
-            "✅ Бот запущен! Буду присылать уведомления о дожде в этом месте. Кстати, дождь как раз сейчас идёт — надеюсь, вы в тепле! 🌧",
+            "✅ Локация обновлена! Часовой пояс определён автоматически.",
             reply_markup=ReplyKeyboardRemove()
         )
     else:
         bot.send_message(
             msg.chat.id,
-            "✅ Бот запущен! Буду следить за погодой в этом месте и пришлю уведомление если будет дождь.\n\nЧтобы сменить локацию — напишите /location",
-            reply_markup=ReplyKeyboardRemove()
+            "✅ Отлично! Теперь выберите время — каждый день в это время буду присылать сводку погоды:",
+            reply_markup=time_keyboard()
         )
+        bot.register_next_step_handler(msg, save_hour_after_location)
 
-# --- Тексты уведомлений ---
-
-RAIN_SOON_MESSAGES = [
-    "🌂 В течение часа ожидается дождь — самое время достать зонтик!",
-    "⛅ Дождь на подходе! Успейте подготовиться.",
-    "🌧 Скоро польёт — зонтик лучше взять заранее.",
-    "💧 Дождевые тучи уже близко. Зонтик наготове?",
-    "⛈ В течение часа ожидается дождь. Не говорите что не предупреждали!",
-    "🌦 Дождь скоро будет — хорошее время достать зонтик.",
-    "☁️ Тучи сгущаются, дождь совсем рядом!",
-    "🌂 Успейте добраться до укрытия — дождь уже в пути!",
-    "💦 До дождя осталось совсем немного. Зонтик с собой?",
-    "🌧 Дождь приближается к вашему району!",
-    "⛅ Небо хмурится — скоро прольёт. Будьте готовы!",
-    "🌩 Гроза на подходе! Лучше остаться под крышей.",
-    "💧 Дождик уже спешит к вам — встречайте с зонтиком!",
-    "☔ Скоро дождь! Лучше выйти пораньше или прихватить зонт.",
-    "🌦 Осадки ожидаются в ближайшие полчаса!",
-    "⛈ Тучи уже над головой — дождь вот-вот начнётся.",
-    "🌧 Дождливая погода уже близко. Одевайтесь соответственно!",
-    "💦 В течение часа мокро — зонтик ваш лучший друг сегодня.",
-    "☁️ Дождь приближается! Самое время проверить зонтик.",
-    "🌂 Не забудьте зонтик — дождь будет совсем скоро!",
-]
-
-RAIN_NOW_MESSAGES = [
-    "☔ Дождь уже начался! Надеюсь, зонтик под рукой.",
-    "🌧 Ой, дождь уже идёт! Поскорее под крышу!",
-    "💧 Капли уже падают — бегите за зонтиком!",
-    "🌩 Дождь застал врасплох? Ищите укрытие!",
-    "⛈ Дождь уже здесь — и он не шутит!",
-    "💦 Мокро на улице! Зонтик бы не помешал.",
-    "🌧 Дождь пришёл без предупреждения. Берегите себя!",
-    "☔ Льёт! Надеюсь, вы уже в тепле.",
-    "🌦 Дождь начался — куртку в руки и вперёд!",
-    "💧 Небо открылось! Срочно доставайте зонтик.",
-    "⛅ Дождь уже идёт в вашем районе. Не промокните!",
-    "🌩 Началось! Дождь уже поливает вовсю.",
-    "💦 Дождь пришёл — и выглядит серьёзно. Зонтик наготове?",
-    "🌧 Мокрая погода уже здесь. Одевайтесь теплее!",
-    "☔ Дождь идёт прямо сейчас — берегите причёску!",
-    "🌂 Льёт как из ведра! Лучше остаться дома.",
-    "💧 Дождь уже барабанит по крышам. Зонтик с собой?",
-    "⛈ Внимание — дождь уже начался! Будьте осторожны.",
-    "🌦 Дождь застал вас на улице? Ищите навес!",
-    "🌧 Всё, началось! Дождь уже идёт в вашем районе.",
-]
-
-# --- Основная проверка ---
-
-def check_rain():
+def save_hour_after_location(msg):
+    text = msg.text.strip()
+    if not text or not text.endswith(":00") or not text[:-3].isdigit():
+        bot.send_message(msg.chat.id, "Пожалуйста, выберите время из кнопок.")
+        bot.register_next_step_handler(msg, save_hour_after_location)
+        return
+    hour = int(text[:-3])
     users = load_users()
-    changed = False
+    chat_id = str(msg.chat.id)
+    users[chat_id]["hour"] = hour
+    save_users(users)
+    bot.send_message(
+        msg.chat.id,
+        f"✅ Готово! Каждый день в {text} буду присылать вам сводку погоды. Хорошего дня!\n\n"
+        f"Чтобы сменить локацию — /location\n"
+        f"Чтобы сменить время — /time",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
+# --- Получение прогноза ---
+
+WIND_LEVELS = [
+    (0, 20, "слабый"),
+    (20, 40, "средний"),
+    (40, float("inf"), "сильный"),
+]
+
+WEATHER_CODES = {
+    "rain": list(range(51, 68)) + list(range(80, 83)),
+    "snow": list(range(71, 78)) + [85, 86],
+    "storm": list(range(95, 100)),
+}
+
+def get_wind_label(speed):
+    for low, high, label in WIND_LEVELS:
+        if low <= speed < high:
+            return label
+    return "сильный"
+
+def get_forecast(lat, lon, timezone):
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        f"&hourly=temperature_2m,precipitation,weathercode,windspeed_10m"
+        f"&daily=temperature_2m_max,temperature_2m_min"
+        f"&timezone={timezone}"
+        f"&forecast_days=1"
+    )
+    return requests.get(url).json()
+
+def format_periods(hours, codes, target_codes):
+    periods = []
+    start = None
+    for i, (hour, code) in enumerate(zip(hours, codes)):
+        if code in target_codes:
+            if start is None:
+                start = hour
+            end = hour
+        else:
+            if start is not None:
+                periods.append(f"с {start} до {end}")
+                start = None
+    if start is not None:
+        periods.append(f"с {start} до {end}")
+    return ", ".join(periods) if periods else None
+
+def build_forecast_message(lat, lon, timezone):
+    data = get_forecast(lat, lon, timezone)
+    hourly = data.get("hourly", {})
+    daily = data.get("daily", {})
+
+    hours = hourly.get("time", [])
+    hours_short = [h.split("T")[1][:5] for h in hours]
+    weathercodes = hourly.get("weathercode", [])
+    windspeeds = hourly.get("windspeed_10m", [])
+
+    temp_max = round(daily.get("temperature_2m_max", [0])[0])
+    temp_min = round(daily.get("temperature_2m_min", [0])[0])
+    avg_wind = sum(windspeeds) / len(windspeeds) if windspeeds else 0
+    wind_label = get_wind_label(avg_wind)
+
+    rain_periods = format_periods(hours_short, weathercodes, WEATHER_CODES["rain"])
+    snow_periods = format_periods(hours_short, weathercodes, WEATHER_CODES["snow"])
+    storm_periods = format_periods(hours_short, weathercodes, WEATHER_CODES["storm"])
+
+    is_winter = temp_max < 0
+    header = "❄️ Доброе утро! Сводка погоды на сегодня:" if is_winter else "🌤 Доброе утро! Сводка погоды на сегодня:"
+
+    msg = f"{header}\n"
+    msg += f"🌡 Температура: {temp_min:+}°..{temp_max:+}°\n"
+    msg += f"💨 Ветер: {wind_label}\n"
+
+    if not rain_periods and not snow_periods and not storm_periods:
+        msg += "✅ Осадков не ожидается"
+    else:
+        if rain_periods:
+            msg += f"🌧 Дождь: {rain_periods}\n"
+        if snow_periods:
+            msg += f"🌨 Снегопад: {snow_periods}\n"
+        if storm_periods:
+            msg += f"⛈ Гроза: {storm_periods}\n"
+
+    return msg.strip()
+
+# --- Отправка сводки ---
+
+def send_daily_forecasts():
+    users = load_users()
     for chat_id, data in users.items():
+        lat = data.get("lat")
+        lon = data.get("lon")
+        hour = data.get("hour")
+        timezone = data.get("timezone", "UTC")
+
+        if not lat or not lon or hour is None:
+            continue
+
         try:
-            lat = data.get("lat")
-            lon = data.get("lon")
-            if not lat or not lon:
-                continue
-
-            raining = check_rain_now(lat, lon)
-            was_raining = data.get("raining", False)
-            was_warned = data.get("warned", False)
-
-            if raining and not was_raining and not was_warned:
-                # Дождь пришёл внезапно без предупреждения
-                bot.send_message(int(chat_id), random.choice(RAIN_NOW_MESSAGES))
-                users[chat_id]["raining"] = True
-                users[chat_id]["warned"] = True
-                changed = True
-
-            elif raining and not was_raining and was_warned:
-                # Дождь начался — но мы уже предупреждали, молчим
-                users[chat_id]["raining"] = True
-                changed = True
-
-            elif not raining and was_raining:
-                # Дождь закончился
-                users[chat_id]["raining"] = False
-                users[chat_id]["warned"] = False
-                changed = True
-
-            elif not raining and not was_raining and not was_warned:
-                # Дождя нет — проверяем прогноз на ближайшие 30-60 минут
-                rain_soon = check_rain_soon(lat, lon)
-                if rain_soon:
-                    bot.send_message(int(chat_id), random.choice(RAIN_SOON_MESSAGES))
-                    users[chat_id]["warned"] = True
-                    changed = True
-
+            tz = pytz.timezone(timezone)
+            now = datetime.now(tz)
+            if now.hour == hour:
+                msg = build_forecast_message(lat, lon, timezone)
+                bot.send_message(int(chat_id), msg)
         except Exception as e:
             print(f"Ошибка для {chat_id}: {e}")
 
-    if changed:
-        save_users(users)
-
-schedule.every(30).minutes.do(check_rain)
+schedule.every().hour.do(send_daily_forecasts)
 
 threading.Thread(target=bot.polling, daemon=True).start()
 
